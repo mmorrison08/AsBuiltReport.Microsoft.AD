@@ -816,44 +816,38 @@ function Get-WinADDuplicateSPN {
         }
     )
 
-    $SPNCache = [ordered] @{}
+    #Initialize an ordered dictionary to store SPN counts.
+    $SPNCache = [System.Collections.Generic.Dictionary[string, int]]::new()
+
     $ForestInformation = Get-WinADForestDetail -Forest $Forest -IncludeDomains $IncludeDomains -ExcludeDomains $ExcludeDomains -ExtendedForestInformation $ExtendedForestInformation -Credential $Credential
+
     foreach ($Domain in $ForestInformation.Domains) {
+
         Write-Verbose -Message "Get-WinADDuplicateSPN - Processing $Domain"
-        $Objects = (Get-ADObject -Credential $Credential -LDAPFilter "ServicePrincipalName=*" -Properties ServicePrincipalName -Server $ForestInformation['QueryServers'][$domain]['HostName'][0]) | Select-Object DistinguishedName, Name, ServicePrincipalName
+        $Objects = Get-ADObject -Credential $Credential -LDAPFilter "(ServicePrincipalName=*)" -Properties ServicePrincipalName -Server $ForestInformation['QueryServers'][$domain]['HostName'][0] |
+        Select-Object -Property DistinguishedName, Name, ServicePrincipalName
+
         Write-Verbose -Message "Get-WinADDuplicateSPN - Found $($Objects.Count) objects. Processing..."
+
         foreach ($Object in $Objects) {
-            foreach ($SPN in $Object.ServicePrincipalName) {
-                if (-not $SPNCache[$SPN]) {
-                    $SPNCache[$SPN] = [PSCustomObject] @{
-                        Name = $SPN
-                        Duplicate = $false
-                        Count = 0
-                        Excluded = $false
-                        List = [System.Collections.Generic.List[Object]]::new()
+            if ($Object.ServicePrincipalName) {
+                foreach ($SPN in $Object.ServicePrincipalName) {
+                    # Check if the SPN already exists in the cache and update the count.
+                    if ($SPNCache.ContainsKey($SPN)) {
+                        $SPNCache[$SPN]++
+                    } else {
+                        $SPNCache[$SPN] = 1
                     }
                 }
-                if ($SPN -in $Excluded) {
-                    $SPNCache[$SPN].Excluded = $true
-                }
-                $SPNCache[$SPN].List.Add($Object)
-                $SPNCache[$SPN].Count++
             }
         }
     }
+
     Write-Verbose -Message "Get-WinADDuplicateSPN - Finalizing output. Processing..."
-    foreach ($SPN in $SPNCache.Values) {
-        if ($SPN.Count -gt 1 -and $SPN.Excluded -ne $true) {
-            $SPN.Duplicate = $true
-        }
-        if ($All) {
-            $SPN
-        } else {
-            if ($SPN.Duplicate) {
-                $SPN
-            }
-        }
-    }
+    $DuplicateSPNs = $SPNCache.GetEnumerator() | Where-Object { $_.Value -gt 1 } |
+    Select-Object -Property @{Name='SPN'; Expression={$_.Key}}, @{Name='Count'; Expression={$_.Value}}
+
+    $DuplicateSPNs
 }
 
 Function Get-WinADDuplicateObject {
@@ -1036,7 +1030,7 @@ function Get-WinADForestDetail {
     .LINK
 
     #>
-    [OutputType('System.Collections.Specialized.OrderedDictionary')]
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
     [CmdletBinding()]
     param(
         [alias('ForestName')][string] $Forest,
@@ -2130,16 +2124,16 @@ function Get-ADObjectList {
     $ConstructedDomainName = $ConstructedDomainName -replace " ", ",DC="
 
     if ($Server) {
-        $searcher.SearchRoot = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$Server/$ConstructedDomainName",$Credential.UserName,$Credential.GetNetworkCredential().Password)
+        $searcher.SearchRoot = New-Object System.DirectoryServices.DirectoryEntry("LDAP://$Server/$ConstructedDomainName", $Credential.UserName, $Credential.GetNetworkCredential().Password)
     } else {
         $searcher.SearchRoot = "LDAP://$ConstructedDomainName"
     }
 
     $searcher.PageSize = 1000
-	$searcher.PropertiesToLoad.Add("*") | Out-Null
+    $searcher.PropertiesToLoad.Add("*") | Out-Null
     $searcher.SearchScope = "Subtree"
 
-	# Construct the LDAP filter based on the -Collect parameter
+    # Construct the LDAP filter based on the -Collect parameter
     $filters = @()
     foreach ($item in $Object) {
         switch ($item) {
@@ -2176,7 +2170,7 @@ function ConvertTo-HashToYN {
     .DESCRIPTION
 
     .NOTES
-        Version:        0.1.0
+        Version:        0.2.0
         Author:         Jonathan Colon
 
     .EXAMPLE
@@ -2185,15 +2179,15 @@ function ConvertTo-HashToYN {
 
     #>
     [CmdletBinding()]
-    [OutputType([Hashtable])]
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
     Param (
         [Parameter (Position = 0, Mandatory)]
         [AllowEmptyString()]
-        [Hashtable] $TEXT
+        [System.Collections.Specialized.OrderedDictionary] $TEXT
     )
 
     $result = [ordered] @{}
-    foreach ($i in $inObj.GetEnumerator()) {
+    foreach ($i in $TEXT.GetEnumerator()) {
         try {
             $result.add($i.Key, (ConvertTo-TextYN $i.Value))
         } catch {
@@ -2204,3 +2198,42 @@ function ConvertTo-HashToYN {
         return $result
     } else { return $TEXT }
 } # end
+
+function Get-ValidDCfromDomain {
+    <#
+    .SYNOPSIS
+        Used by As Built Report to get a valid Domain Controller from Domain.
+    .DESCRIPTION
+        Function to get a valid DC from a Active Directory Domain string.
+        It use Test-WsMan to test WinRM status of the machine.
+    .NOTES
+        Version:        0.1.0
+        Author:         Jonathan Colon
+    .EXAMPLE
+        PS C:\Users\JohnDoe> Get-ValidDCfromDomainfromDomain -Domain 'pharmax.local'
+            Server-DC-01V.pharmax.local
+    #>
+    [CmdletBinding()]
+    [OutputType([String])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$Domain
+    )
+
+    $DCList = Invoke-Command -Session $TempPssSession { (Get-ADDomain -Identity $using:Domain).ReplicaDirectoryServers }
+
+    if ($DCList) {
+        foreach ($TestedDC in $DCList) {
+            if (Test-WSMan -ComputerName $TestedDC -Credential $Credential -Authentication $Options.PSDefaultAuthentication -ErrorAction SilentlyContinue) {
+                Write-PScriboMessage "Using $TestedDC to retreive $Domain information."
+                $TestedDC
+                break
+            } else {
+                Write-PScriboMessage "Unable to connect to $TestedDC to retreive $Domain information."
+            }
+        }
+    } else {
+        Write-PScriboMessage "Unable to connect to $Domain to get a valid Domain Controller list."
+    }
+}# end
