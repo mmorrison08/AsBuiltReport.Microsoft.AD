@@ -348,7 +348,7 @@ function Get-AbrADDomainObject {
                                     try {
                                         # Edited to more efficiently grab group membership
                                         #$UserCount = Invoke-Command -Session $TempPssSession { (Get-ADGroupMember  -Server $using:DC  -Identity ($using:Group).Name  | Measure-Object).Count }
-                                        $UserCount = ($Group.Members | Measure-Object).Count 
+                                        $UserCount = ($Group.Members | Measure-Object).Count
                                         $inObj = [ordered] @{
                                             'Name' = $Group.Name
                                             'Category' = $Group.GroupCategory
@@ -645,9 +645,11 @@ function Get-AbrADDomainObject {
                             Write-PScriboMessage -IsWarning "$($_.Exception.Message) (Empty Groups Objects Section)"
                         }
                     }
+                    # Due to performance issues with this section, I am commenting it out temporarily
+                    <#
                     if ($HealthCheck.Domain.BestPractice) {
                         try {
-                            Write-PScriboMessage "Building array of Group objects that are members of groups for $Forestinfo."
+                            Write-PScriboMessage "Building array of nested groups, then looping through and checking if the group member is both a child and parent of the group (circular group membership) for $Forestinfo."
                             $OutObj = @()
                             # Loop through each parent group
                             ForEach ($Parent in $GroupOBj) {
@@ -660,7 +662,6 @@ function Get-AbrADDomainObject {
                                 $Len = @($Children).Count
 
                                 if ($Len -gt 0) {
-                                    Write-PScriboMessage "Checking for any member who is both a Child of a group as well as its Parent for $Forestinfo."
                                     ForEach ($Child in $Children) {
                                         # Now find any member of $Child which is also the childs $Parent
                                         $nestedGroup = @(
@@ -717,7 +718,7 @@ function Get-AbrADDomainObject {
                         } catch {
                             Write-PScriboMessage -IsWarning "$($_.Exception.Message) (Circular Group Membership Section)"
                         }
-                    }
+                    }#>
                 }
             } catch {
                 Write-PScriboMessage -IsWarning $($_.Exception.Message)
